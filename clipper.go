@@ -519,6 +519,19 @@ func (c *Client) Transactions(ctx context.Context) (map[Card]TransactionData, er
 // startDate and endDate should be in YYYY-MM-DD format, or empty for default range
 // Set dryRun to true to test without actually downloading PDFs
 func (c *Client) DownloadPDFs(ctx context.Context, outputDir string, startDate, endDate string, dryRun bool) error {
+	convertDateFormat := func(dateStr string) string {
+		if dateStr == "" {
+			return ""
+		}
+		t, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return dateStr
+		}
+		return t.Format("January 2, 2006")
+	}
+	
+	clipperStartDate := convertDateFormat(startDate)
+	clipperEndDate := convertDateFormat(endDate)
 	cards, err := c.cards(ctx)
 	if err != nil {
 		return err
@@ -564,18 +577,22 @@ func (c *Client) DownloadPDFs(ctx context.Context, outputDir string, startDate, 
 		data.Set("cardNickName", card.Nickname)
 		data.Set("rhStartDate", "")
 		data.Set("rhEndDate", "")
-		// Set date range
-		if startDate != "" {
-			data.Set("startDateValue", startDate)
-			data.Set("startDate", startDate)
+		// Set date range fields
+		if clipperStartDate != "" {
+			data.Set("rhStartDate", clipperStartDate)
+			data.Set("startDateValue", clipperStartDate)
+			data.Set("startDate", clipperStartDate)
 		} else {
+			data.Set("rhStartDate", "")
 			data.Set("startDateValue", "")
 			data.Set("startDate", "")
 		}
-		if endDate != "" {
-			data.Set("endDateValue", endDate)
-			data.Set("endDate", endDate)
+		if clipperEndDate != "" {
+			data.Set("rhEndDate", clipperEndDate)
+			data.Set("endDateValue", clipperEndDate)
+			data.Set("endDate", clipperEndDate)
 		} else {
+			data.Set("rhEndDate", "")
 			data.Set("endDateValue", "")
 			data.Set("endDate", "")
 		}
