@@ -516,7 +516,9 @@ func (c *Client) Transactions(ctx context.Context) (map[Card]TransactionData, er
 }
 
 // DownloadPDFs downloads raw PDF transaction reports and saves them to the specified directory
-func (c *Client) DownloadPDFs(ctx context.Context, outputDir string) error {
+// startDate and endDate should be in YYYY-MM-DD format, or empty for default range
+// Set dryRun to true to test without actually downloading PDFs
+func (c *Client) DownloadPDFs(ctx context.Context, outputDir string, startDate, endDate string, dryRun bool) error {
 	cards, err := c.cards(ctx)
 	if err != nil {
 		return err
@@ -562,11 +564,29 @@ func (c *Client) DownloadPDFs(ctx context.Context, outputDir string) error {
 		data.Set("cardNickName", card.Nickname)
 		data.Set("rhStartDate", "")
 		data.Set("rhEndDate", "")
-		// Set date range to last 60 days (default behavior)
-		data.Set("startDateValue", "")
-		data.Set("startDate", "")
-		data.Set("endDateValue", "")
-		data.Set("endDate", "")
+		// Set date range
+		if startDate != "" {
+			data.Set("startDateValue", startDate)
+			data.Set("startDate", startDate)
+		} else {
+			data.Set("startDateValue", "")
+			data.Set("startDate", "")
+		}
+		if endDate != "" {
+			data.Set("endDateValue", endDate)
+			data.Set("endDate", endDate)
+		} else {
+			data.Set("endDateValue", "")
+			data.Set("endDate", "")
+		}
+		
+		if dryRun {
+			fmt.Printf("[DRY RUN] Would download PDF for card %d (%s) with date range: %s to %s\n", 
+				card.SerialNumber, card.Nickname, 
+				map[bool]string{true: startDate, false: "default"}[startDate != ""], 
+				map[bool]string{true: endDate, false: "default"}[endDate != ""])
+			continue
+		}
 		
 		req, err := http.NewRequest("POST", host+"/ClipperWeb/view/transactionHistory.pdf", strings.NewReader(data.Encode()))
 		if err != nil {
