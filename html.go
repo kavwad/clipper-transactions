@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"golang.org/x/net/html"
 )
@@ -29,6 +30,36 @@ func findViewState(r io.Reader) (string, error) {
 				}
 			}
 			if !foundViewState {
+				continue
+			}
+			for i := range tok.Attr {
+				if tok.Attr[i].Key == "value" {
+					return tok.Attr[i].Val, nil
+				}
+			}
+		}
+	}
+}
+
+func findCSRFToken(r io.Reader) (string, error) {
+	z := html.NewTokenizer(r)
+	for {
+		tt := z.Next()
+		switch tt {
+		case html.ErrorToken:
+			return "", errors.New("CSRF token not found")
+		case html.SelfClosingTagToken:
+			tok := z.Token()
+			if tok.Data != "input" {
+				continue
+			}
+			foundCSRF := false
+			for i := range tok.Attr {
+				if tok.Attr[i].Key == "name" && tok.Attr[i].Val == "_csrf" {
+					foundCSRF = true
+				}
+			}
+			if !foundCSRF {
 				continue
 			}
 			for i := range tok.Attr {
@@ -155,7 +186,7 @@ func setNickSerialNumber(z *html.Tokenizer, card *Card) error {
 func getCards(r io.Reader) ([]Card, error) {
 	z := html.NewTokenizer(r)
 	cards := make([]Card, 0)
-	card := new(Card)
+	
 	for {
 		tt := z.Next()
 		switch tt {
@@ -163,24 +194,55 @@ func getCards(r io.Reader) ([]Card, error) {
 			return cards, nil
 		case html.StartTagToken:
 			tok := z.Token()
-			if tok.Data != "div" {
+			if tok.Data != "span" {
 				continue
 			}
+			// Look for spans with class "d-inline-block" that contain card info
+			hasClass := false
 			for i := range tok.Attr {
-				if tok.Attr[i].Key == "class" && tok.Attr[i].Val == "darkGreyCardHeader" {
-					if err := setNickSerialNumber(z, card); err != nil {
-						return nil, err
-					}
+				if tok.Attr[i].Key == "class" && tok.Attr[i].Val == "d-inline-block" {
+					hasClass = true
+					break
 				}
-				if tok.Attr[i].Key == "class" && tok.Attr[i].Val == "cardInfo" {
-					if err := setCardInfo(z, card); err != nil {
-						return nil, err
-					}
+			}
+			if !hasClass {
+				continue
+			}
+			
+			// Get the text content of this span
+			tt = z.Next()
+			if tt == html.TextToken {
+				text := z.Token().Data
+				// Parse card number and name from "1234567890 - CardName" format
+				if card := parseCardText(text); card != nil {
 					cards = append(cards, *card)
-					card = new(Card)
 				}
 			}
 		}
+	}
+}
+
+func parseCardText(text string) *Card {
+	// Parse format like "1401491737 - Guest"
+	parts := strings.Split(text, " - ")
+	if len(parts) != 2 {
+		return nil
+	}
+	
+	cardNumberStr := strings.TrimSpace(parts[0])
+	cardName := strings.TrimSpace(parts[1])
+	
+	// Validate card number is numeric and reasonable length
+	cardNumber, err := strconv.ParseInt(cardNumberStr, 10, 64)
+	if err != nil || len(cardNumberStr) < 10 {
+		return nil
+	}
+	
+	return &Card{
+		SerialNumber: cardNumber,
+		Nickname:     cardName,
+		Status:       "Active", // Default assumption
+		Type:         "ADULT",  // Default assumption
 	}
 }
 

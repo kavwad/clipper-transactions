@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -402,27 +401,30 @@ const host = "https://www.clippercard.com"
 const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:58.0) Gecko/20100101 Firefox/58.0"
 
 func (c *Client) Cards(ctx context.Context) ([]Card, error) {
-	_, cards, err := c.cards(ctx)
+	cards, err := c.cards(ctx)
 	return cards, err
 }
 
 // caller should hold c.mu
 func (c *Client) login(ctx context.Context) (*http.Response, error) {
-	req, err := http.NewRequest("GET", host+"/ClipperCard/loginFrame.jsf", nil)
+	// First, get the login page to obtain CSRF token
+	req, err := http.NewRequest("GET", host+"/ClipperWeb/login.html", nil)
 	if err != nil {
 		return nil, err
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("could not get Clipper page: want 200 response code, got %d", resp.StatusCode)
+		return nil, fmt.Errorf("could not get Clipper login page: want 200 response code, got %d", resp.StatusCode)
 	}
-	viewState, err := findViewState(resp.Body)
+	
+	// Extract CSRF token from the page
+	csrfToken, err := findCSRFToken(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -435,46 +437,40 @@ func (c *Client) login(ctx context.Context) (*http.Response, error) {
 		return nil, closeErr
 	}
 
+	// Now submit the login form
 	data := url.Values{}
-	data.Set("j_idt13", "j_idt13")
-	data.Set("j_idt13:username", c.username)
-	data.Set("j_idt13:password", c.password)
-	data.Set("javax.faces.behavior.event", "action")
-	data.Set("javax.faces.partial.ajax", "true")
-	data.Set("javax.faces.partial.execute", "j_idt13:submitLogin j_idt13:username j_idt13:password")
-	data.Set("javax.faces.partial.render", "j_idt13:err")
-	data.Set("javax.faces.source", "j_idt13:submitLogin")
-	data.Set("javax.faces.ViewState", viewState)
+	data.Set("_csrf", csrfToken)
+	data.Set("email", c.username)
+	data.Set("password", c.password)
 
-	req, err = http.NewRequest("POST", host+"/ClipperCard/loginFrame.jsf", strings.NewReader(data.Encode()))
+	req, err = http.NewRequest("POST", host+"/ClipperWeb/account", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Referer", "https://www.clippercard.com/ClipperCard/loginFrame.jsf")
-	req.Header.Set("Faces-Request", "partial-ajax")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Referer", "https://www.clippercard.com/ClipperWeb/login.html")
 	resp2, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	if resp2.StatusCode != 200 {
-		return nil, fmt.Errorf("could not login: want 200 response code, got %d", resp2.StatusCode)
+	if resp2.StatusCode != 200 && resp2.StatusCode != 302 {
+		return nil, fmt.Errorf("could not login: want 200 or 302 response code, got %d", resp2.StatusCode)
 	}
 	c.loggedIn = true
 	return resp2, nil
 }
 
 func (c *Client) dashboard(ctx context.Context) (*http.Response, error) {
-	req, err := http.NewRequest("GET", host+"/ClipperCard/dashboard.jsf", nil)
+	req, err := http.NewRequest("GET", host+"/ClipperWeb/account.html", nil)
 	if err != nil {
 		return nil, err
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -485,7 +481,7 @@ func (c *Client) dashboard(ctx context.Context) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *Client) cards(ctx context.Context) (string, []Card, error) {
+func (c *Client) cards(ctx context.Context) ([]Card, error) {
 	var resp *http.Response
 	var err error
 	c.mu.Lock()
@@ -493,91 +489,127 @@ func (c *Client) cards(ctx context.Context) (string, []Card, error) {
 		c.mu.Unlock()
 		resp, err = c.dashboard(ctx)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 	} else {
 		resp, err = c.login(ctx)
 		if err != nil {
 			c.mu.Unlock()
-			return "", nil, err
+			return nil, err
 		}
 		c.mu.Unlock()
 	}
 	dashboardData, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := resp.Body.Close(); err != nil {
-		return "", nil, err
-	}
-	viewState2, err := findViewState(bytes.NewReader(dashboardData))
-	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	cards, err := getCards(bytes.NewReader(dashboardData))
-	return viewState2, cards, err
+	return cards, err
 }
 
 func (c *Client) Transactions(ctx context.Context) (map[Card]TransactionData, error) {
-	viewState, cards, err := c.cards(ctx)
+	// TODO: Update this method to work with new ClipperWeb API
+	return nil, fmt.Errorf("Transactions method not yet updated for new ClipperWeb API - use DownloadPDFs instead")
+}
+
+// DownloadPDFs downloads raw PDF transaction reports and saves them to the specified directory
+func (c *Client) DownloadPDFs(ctx context.Context, outputDir string) error {
+	cards, err := c.cards(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	result := make(map[Card]TransactionData)
+	
+	// Get CSRF token from account page
+	req, err := http.NewRequest("GET", host+"/ClipperWeb/account.html", nil)
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("could not get account page: want 200 response code, got %d", resp.StatusCode)
+	}
+	
+	csrfToken, err := findCSRFToken(resp.Body)
+	if err != nil {
+		return err
+	}
+	_, discardErr := io.Copy(ioutil.Discard, resp.Body)
+	if discardErr != nil {
+		return discardErr
+	}
+	closeErr := resp.Body.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+	
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	for i := range cards {
-		history := fmt.Sprintf("mainForm:j_idt95:%d:seeHistorySixty", i)
+	
+	for _, card := range cards {
+		// Create form data for PDF download
 		data := url.Values{}
-		data.Set("javax.faces.ViewState", viewState)
-		data.Set("mainForm", "mainForm")
-		data.Set("mainForm:password", "")
-		data.Set("mainForm:j_idt65", strconv.Itoa(i))
-		for j := range cards {
-			data.Set(fmt.Sprintf("mainForm:j_idt95:%d:cardName", j), cards[j].Nickname)
-		}
-		data.Set("mainForm:newEcashAmtVal", "0.0")
-		data.Set("mainForm:newParkingPurseAmtVal", "0.0")
-		data.Set(history, history)
-		data.Set("mainForm:username", c.username)
-		req, err := http.NewRequest("POST", host+"/ClipperCard/dashboard.jsf", strings.NewReader(data.Encode()))
+		data.Set("_csrf", csrfToken)
+		data.Set("cardNumber", strconv.FormatInt(card.SerialNumber, 10))
+		data.Set("cardNickName", card.Nickname)
+		data.Set("rhStartDate", "")
+		data.Set("rhEndDate", "")
+		// Set date range to last 60 days (default behavior)
+		data.Set("startDateValue", "")
+		data.Set("startDate", "")
+		data.Set("endDateValue", "")
+		data.Set("endDate", "")
+		
+		req, err := http.NewRequest("POST", host+"/ClipperWeb/view/transactionHistory.pdf", strings.NewReader(data.Encode()))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		req = req.WithContext(ctx)
 		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
-		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Referer", "https://www.clippercard.com/ClipperCard/dashboard.jsf")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/pdf,*/*")
+		req.Header.Set("Referer", "https://www.clippercard.com/ClipperWeb/account.html")
+		
 		resp, err := c.client.Do(req)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if resp.StatusCode != 200 {
-			fmt.Fprintf(os.Stderr, "Bad status: want 200 got %d\n", resp.StatusCode)
-			io.Copy(os.Stderr, resp.Body)
-			os.Exit(2)
+			return fmt.Errorf("bad status for card %d: want 200 got %d", card.SerialNumber, resp.StatusCode)
 		}
+		
 		ctype := resp.Header.Get("Content-Type")
 		typ, _, err := mime.ParseMediaType(ctype)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if typ != "application/pdf" {
-			return nil, fmt.Errorf("could not get transactions for card %d: Bad response content-type: want pdf got %s\n", i, ctype)
+			return fmt.Errorf("could not get transactions for card %d: Bad response content-type: want pdf got %s", card.SerialNumber, ctype)
 		}
+		
 		pdfBody, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return nil, err
-		}
-		csv, err := ParsePDF(bytes.NewReader(pdfBody))
-		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := resp.Body.Close(); err != nil {
-			return nil, err
+			return err
 		}
-		result[cards[i]] = csv
+		
+		// Save raw PDF to file
+		filename := fmt.Sprintf("%s/clipper-transactions-%d.pdf", outputDir, card.SerialNumber)
+		err = ioutil.WriteFile(filename, pdfBody, 0644)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Saved PDF: %s (Card: %s)\n", filename, card.Nickname)
 	}
-	return result, nil
+	return nil
 }
