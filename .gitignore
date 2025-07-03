@@ -1,6 +1,7 @@
 /certs
 /*.html
 /config.yml
+config.yml
 /bin
 /pdfs
 /vendor

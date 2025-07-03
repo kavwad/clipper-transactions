@@ -1,0 +1,12 @@
+# Example configuration file for Clipper PDF Downloader
+# Copy this to config.yml and fill in your credentials
+# Note: config.yml is in .gitignore to protect your credentials
+
+users:
+  alice:
+    email: "alice@example.com"
+    password: "alice-password"
+    
+  bob:
+    email: "bob@example.com"
+    password: "bob-password"
