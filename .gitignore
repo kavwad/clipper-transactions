@@ -1,3 +1,5 @@
 /certs
 /*.html
 /config.yml
+/bin
+/pdfs
