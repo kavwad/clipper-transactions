@@ -10,3 +10,8 @@ users:
   bob:
     email: "bob@example.com"
     password: "bob-password"
+    
+  # Add more users as needed:
+  # carol:
+  #   email: "carol@example.com"
+  #   password: "carol-password"
